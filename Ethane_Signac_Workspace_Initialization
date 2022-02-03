@@ -1,0 +1,11 @@
+import signac
+from flow import FlowProject
+project=signac.init_project('Signac-Ethane')
+temperature=["98", "173", "248", "298"]
+for t in temperature:
+    sp={'t': t, 'p': 410}
+    job=project.open_job(sp)
+    job.init()
+project=signac.get_project()
+for job in project:
+    print(job)
