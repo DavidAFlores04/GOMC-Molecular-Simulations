@@ -1,0 +1,126 @@
+#Creating the system through the GOMC platform, automatic simulation launch  
+from mbuild.packing import fill_box
+import signac
+import flow
+from flow import FlowProject
+import json 
+import mbuild as mb
+import numpy as np
+from foyer import Forcefield
+import mbuild.formats.charmm_writer as mf_charmm
+import mbuild.formats.gomc_conf_writer as gomc_control
+import os 
+import pandas as pd
+import scipy as sp
+import matplotlib.pyplot as plt
+import csv as csv
+import statistics
+from collections import defaultdict
+import os
+import matplotlib.axis as axis
+from scipy.optimize import curve_fit
+from scipy.interpolate import interp1d
+from scipy.signal import savgol_filter
+from scipy import stats
+from matplotlib import pyplot as plt
+from os.path import isfile
+import subprocess
+import fileinput
+import glob
+from mbuild import recipes
+import parmed.structure
+import foyer
+import sys
+import porebuilder.porebuilder as porebuilder
+sys.path.append('../../../../../')
+print('Checkpoint 1')
+#import mosdef_slitpore.utils
+#from mosdef_slitpore.utils import charmm_writer as mf_charmm
+@FlowProject.label
+def files_created(job):
+    return job.isfile('in_NVT.conf')
+@FlowProject.label
+def sim_started(job): 
+    return job.isfile('out.log')
+print('Checkpoint 2')
+@FlowProject.operation
+@flow.with_job
+def write_files(job):
+    print(job)
+    print('Checkpoint 3')
+    Liquid_box_total_molecules = int(job.sp.l)
+    trappe_forcefield = 'trappe-ua'
+    FF_Molecule = Forcefield(name = trappe_forcefield)
+    Molecule = mb.load('../../hexanol-ua.mol2')
+    Temperature=int(job.sp.t) 
+    #Pressure=int(job.sp.p) - Do I actually need to write this?
+    MC_steps=10000000
+    Output_name='C2A_output'
+    #Porous Graphene Surface Interaction
+    hexanol_res_name = 'C6O'
+    print('CHeckpoint 4')
+    FF_file = 'trappe-ua'
+    FF_file_carbon= '../../carbon.xml' 
+    print('Checkpoint 5')
+    hexanol = mb.load('../../hexanol-ua.mol2')
+    print('Checkpoint 6')
+    hexanol.name = hexanol_res_name
+    print('Checkpoint 7')
+    #hexanol.energy_minimize(forcefield = FF_file , steps=10**9)
+    print('Checkpoint 8')
+    FF_Graphene_pore_w_solvent_Dict = {'C6O' : trappe_forcefield, 'BOT' : FF_file_carbon, 'TOP' : FF_file_carbon}
+    residues_Graphene_pore_w_solvent_List = [ hexanol.name,   'BOT', 'TOP']
+    Fix_bonds_angles_residues = [ hexanol.name]
+    Fix_Graphene_residue = [ 'BOT', 'TOP']
+    # Building empty graphene slit
+    pore_width_nm = 2
+    No_sheets = 2
+    sheet_spacing = 3 
+    hexanol_spacing_from_walls = 0.2 
+    Total_box_z_axis_nm = 30 
+    graphene_sheet_space_nm = 0.335 #need to change?
+    n_hexanol = int(job.sp.l) #variable number of molecules set in the signac script 
+    print('checkpoint 9')
+    empty_graphene_pore =porebuilder.GraphenePore( pore_width=pore_width_nm ,
+                                        pore_length=3.0,
+                                        pore_depth=3.0,
+                                        n_sheets=No_sheets,
+                                        slit_pore_dim=2 )
+    print('Checkpoint 10')
+    z_shift= Total_box_z_axis_nm / 2 - (graphene_sheet_space_nm * (No_sheets - 1) + pore_width_nm/2)
+    hexanol_between_pores = mb.fill_box(compound=[hexanol], n_compounds= [n_hexanol] , box=[3, 3, pore_width_nm - hexanol_spacing_from_walls*1]) #changed box from 2.90 to 3
+    hexanol_between_pores.translate([0,  0, hexanol_spacing_from_walls + graphene_sheet_space_nm*(No_sheets-1)])
+    hexanol_between_pores.translate([ -hexanol_between_pores.center[0],   -hexanol_between_pores.center[1], z_shift])
+    empty_graphene_pore.translate([ -empty_graphene_pore.center[0],   -empty_graphene_pore.center[1], z_shift])
+    filled_pore = empty_graphene_pore
+    filled_pore.add(hexanol_between_pores, inherit_periodicity=False)
+    filled_pore.box = mb.Box((filled_pore.box.Lx, filled_pore.box.Ly, Total_box_z_axis_nm), (90,90,90)) #set z axis to 30 ang
+    charmm=mf_charmm.Charmm(filled_pore,
+                                'filled_pore_hexanol_3x3x2.0nm_3-layer',
+                                structure_box_1 = None,
+                                filename_box_1 = None,
+                                ff_filename ="GOMC_pore_hexanol_FF" ,
+                                forcefield_selection= FF_Graphene_pore_w_solvent_Dict ,
+                                residues=residues_Graphene_pore_w_solvent_List ,
+                                bead_to_atom_name_dict = None,
+                                fix_residue = Fix_Graphene_residue,
+                                gomc_fix_bonds_angles = Fix_bonds_angles_residues,
+                                reorder_res_in_pdb_psf = False
+                                )
+    charmm.write_inp()
+    charmm.write_psf()
+    charmm.write_pdb() #to fix issue of charmm being an undefined variable 
+    gomc_control.write_gomc_control_file(charmm, 'in_NVT.conf', 'NVT', MC_steps, Temperature, 
+                                        input_variables_dict={"ElectroStatic": False,
+                                                            "Ewald": False,
+                                                            }
+                                        )
+    print('Completed: GOMC FF file, and the psf and pdb files')
+@FlowProject.operation
+@FlowProject.pre(files_created)
+@FlowProject.post(sim_started)
+@flow.with_job
+def run_job(job):
+    os.system('GOMC_CPU_NVT in_NVT.conf > out.log')
+if __name__ == '__main__':
+    FlowProject().main()   
