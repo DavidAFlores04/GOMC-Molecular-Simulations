@@ -1,4 +1,4 @@
-#Creating the system through the GOMC platform, basic data analysis 
+#Creating the system through the GOMC platform, automatic simulation launch, basic data analysis 
 import signac
 import flow
 from flow import FlowProject
