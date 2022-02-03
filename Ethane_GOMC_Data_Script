@@ -1,0 +1,209 @@
+#Creating the system through the GOMC platform, basic data analysis 
+import signac
+import flow
+from flow import FlowProject
+import json 
+import mbuild as mb
+import numpy as np
+from foyer import Forcefield
+import mbuild.formats.charmm_writer as mf_charmm
+import mbuild.formats.gomc_conf_writer as gomc_control
+import os 
+#Probably need to install a bunch of these 
+import pandas as pd
+import scipy as sp
+import matplotlib.pyplot as plt
+import csv as csv
+import statistics
+from collections import defaultdict
+import os
+import matplotlib.axis as axis
+from scipy.optimize import curve_fit
+from scipy.interpolate import interp1d
+from scipy.signal import savgol_filter
+from scipy import stats
+from matplotlib import pyplot as plt
+from os.path import isfile
+import subprocess
+import fileinput
+import glob
+#Calculations - run through GOMC 
+@FlowProject.label
+def files_created(job):
+    return job.isfile('in_NPT.conf')
+@FlowProject.label
+def sim_started(job): 
+    return job.isfile('out.log')
+@FlowProject.operation
+@FlowProject.post(files_created)
+@FlowProject.label
+def analysis_complete(job):
+    return job.isfile('plot.pdf')
+@flow.with_job
+@FlowProject.label
+def sim_complete(job):
+    #'Info: Completed at'
+    cwd=os.getcwd()
+    output_file=cwd+'/out.log'
+    print(output_file)
+    if isfile(output_file):
+            #check output file for job completion
+            #os.system('grep "Info: Completed at" out.log')
+        task='grep "Info: Completed at" out.log | wc -l'
+        x=subprocess.check_output(task,shell=True)
+            #remove extra characters returned from the subprocess command
+        x=int(x.strip().decode())
+        if x == 1:
+            completed = True
+        else:    
+            completed = False
+    else:
+        completed = False
+    return completed 
+def compute_volume(job):
+    print(job)
+    Liquid_box_length_Ang = 45
+    Liquid_box_total_molecules = 1000
+    forcefield_file = 'trappe-ua'
+    FF_Molecule = Forcefield(name = forcefield_file)
+    Molecule = mb.load('../../ethane.mol2')
+    #Molecule.energy_minimize(forcefield = forcefield_file, steps=10**4)
+    Molecule.name = 'C2A'
+    print('here')
+    Molecule_Type_List = [Molecule]
+    Molecule_mol_ratio_List = [1]
+    Molecules_of_each_type_liquid_list = [int(Liquid_box_total_molecules) ]
+    Molecule_ResName_List = [Molecule.name]
+    Bead_to_atom_name_dict = { '_CH3':'C', '_CH2':'C',  '_CH':'C', '_HC':'C'} #{'_CH3':'C', '_CH2':'C', '_CH':'C', '_HC':'C'}
+    forcefield_files = {Molecule.name : forcefield_file}
+    print('Running: liquid phase box packing')
+    box_liq = mb.fill_box(compound = Molecule_Type_List,
+                        n_compounds=Molecules_of_each_type_liquid_list,
+                        box = [Liquid_box_length_Ang/10,
+                            Liquid_box_length_Ang/10,
+                            Liquid_box_length_Ang/10])
+    print('Completed: liquid phase box packing')
+    print('Running: GOMC FF file, and the psf and pdb files')
+        #needed to write files in each directory
+    charmm = mf_charmm.Charmm(box_liq,
+                            'C2A_input',
+                            structure_box_1 =None  ,
+                            filename_box_1 = None,
+                            ff_filename ="C2A_FF" ,
+                            forcefield_selection  = forcefield_files ,
+                            residues= Molecule_ResName_List ,
+                            bead_to_atom_name_dict = Bead_to_atom_name_dict ,
+                            gomc_fix_bonds_angles = None,
+                            )
+    charmm.write_inp()
+    charmm.write_psf()
+    charmm.write_pdb()
+    Temperature=int(job.sp.t)
+    #98, 173 , 248, and 298 (originally 298)
+    Pressure=int(job.sp.p)
+    #41 MPa (originally 50)
+    MC_steps=200000#0
+    Output_name='C2A_output'
+    gomc_control.write_gomc_control_file(charmm, 'in_NPT.conf',  'NPT', MC_steps, Temperature,
+                                            input_variables_dict={"Pressure": Pressure,
+                                                                "OutputName": Output_name,
+                                                                "VDWGeometricSigma": False,
+                                                                "LRC":True,
+                                                                "Rcut": 10,
+                                                                "RcutLow" : 1,
+                                                                "DisFreq":0.40,
+                                                                "RotFreq":0.40,
+                                                                "RegrowthFreq":0.1,
+                                                                "SwapFreq": 0.0,
+                                                                "VolFreq": 0.01,
+                                                                "IntraSwapFreq":0.09,
+                                                                "EqSteps":1000,
+                                                                "PressureCalc":[False, 1000000],
+                                                                "BlockAverageFreq":[True, 1000000],
+                                                                "HistogramFreq":[False,10000],
+                                                                "Ewald":False,
+                                                                "ElectroStatic":False,
+                                                                "CBMC_First":12,
+                                                                "CBMC_Nth":10,
+                                                                "CBMC_Ang":50,
+                                                                "CBMC_Dih":50
+                                                                }
+                                        )
+    print('Completed: GOMC FF file, and the psf and pdb files')
+#project = signac.get_project()
+#for job in project:
+    #compute_volume(job)
+print('CHECKPOINT 1')
+#Launch all of the simulations together 
+print('CHECKPOINT 2')
+@FlowProject.operation
+@FlowProject.pre(files_created)
+@FlowProject.post(sim_started)
+@flow.with_job
+def run_job(job):
+    os.system('GOMC_CPU_NPT in_NPT.conf > out.log')
+print('CHECKPOINT 3')
+print('CHECKPOINT 4')
+print('CHECKPOINT 5')
+FlowProject.post(sim_started)
+print('CHECKPOINT 6')
+#GRAPHING DATA: Density as a function of temperature, with a constant pressure 
+#Reading the data   
+print('CHECKPOINT 7')
+@FlowProject.operation
+#@FlowProject.pre(sim_complete)
+#@FlowProject.post(analysis_complete)
+@flow.with_job
+def analysis(job):
+    Temperature = ["98", "173", "248", "298"]
+    Pressure = ['410']
+    cwd=os.getcwd()
+    output_file=cwd+'/Blk_C2A_output_BOX_0.dat'
+    print(cwd)
+    data = pd.read_csv(output_file, 
+                        sep='\s+', 
+                        header=0, 
+                        na_values='NaN', 
+                        usecols=['TOT_DENS'], #Use any data 
+                        index_col=False)
+    print('CHECKPOINT 8')
+    data = pd.DataFrame(data) #Turning it into a pandas dataframe
+    #data = data.drop(data.index[[0,1,2]]) #Getting rid of outliers before equilibrium 
+    x = list(data.iloc[:,0])#Turning data into list
+    data_ave = np.mean(x)#Average   
+    with open(job.fn("density.txt"), "w") as file:
+            file.write(str(data_ave) + "\n")
+            file.close
+    print('CHECKPOINT 9')
+    print(data_ave)
+    #Plotting the data
+    #filenames = ['density.txt', 'density.txt', ...]
+    #with open('home/David/Signac_Ethane_2', "w") as outfile:
+        #for fname in filenames:
+            #with open(fname) as infile:
+                #outfile.write(infile.read())
+    file_list = glob.glob("density.txt")
+    with open('result.txt', 'w') as file:
+        input_lines = fileinput.input(file_list)
+        file.writelines(input_lines)
+    lines = input_lines.readlines()
+    #data_points = ''
+    plt.figure()
+    plt.title('Ethane: Temperature vs Density (Constant Pressure)')
+    plt.xlabel('Temperature (K)')
+    plt.ylabel('Density (kg m^-3)')
+    print('CHECKPOINT 10')
+        #read from density.txt and signac_statepoint.json as corresponding variables for graph
+        #Don't extract pressure values from signac_statepoint.json because they are constant
+        #see line 170 for example
+        #Read for data_ave values from density.txt
+    plt.plot(int(job.sp.t),lines, 's', color='red', label='GOMC')
+    plt.xticks([95, 175, 250, 300])
+    plt.legend(framealpha=1, frameon=True)
+    plt.tight_layout()
+    plt.savefig('plot.pdf', bbox_inches='tight')
+    plt.show()
+    print('CHECKPOINT 11')
+    print('Job Complete')
+if __name__ == '__main__':
+    FlowProject().main()    
