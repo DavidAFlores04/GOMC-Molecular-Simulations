@@ -1,0 +1,12 @@
+#Creating automated signac workspaces for simulations of 1-hexanol in confinment of four graphene nanosheets
+import signac
+from flow import FlowProject
+project=signac.init_project('1-hexanol_graphene')
+Liquid_box_total_molecules =["10", "20", "50", "100"]
+for l in Liquid_box_total_molecules:
+    sp={'t': 298, 'l': l} 
+    job=project.open_job(sp)
+    job.init()
+project=signac.get_project()
+for job in project:
+    print(job)
